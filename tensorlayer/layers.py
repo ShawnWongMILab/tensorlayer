@@ -5993,11 +5993,237 @@ class MaxoutLayer(Layer):
 
 
 
+## HighWay layer
+class HighWayLayer(Layer):
+    """
+    The :class:`HighWayLayer` class is a highway layer.
 
+    Parameters
+    ----------
+    layer : a :class:`Layer` instance
+        The `Layer` class feeding into this layer.
+    act : activation function
+        The function that is applied to the layer activations.
+    transform_act : transform gate's activation function
+        The function that is applied to the transform gate's activations.
+    W_init : weights initializer
+        The initializer for initializing the weight matrix.
+    b_init : biases initializer or None
+        The initializer for initializing the bias vector. If None, skip biases.
+    b_transform_init : biases initializer or None
+        The initializer for initializing the transform gate's bias vector. If None, skip biases.
+    W_init_args : dictionary
+        The arguments for the weights tf.get_variable.
+    b_init_args : dictionary
+        The arguments for the biases tf.get_variable.
+    b_transform_init_args : dictionary
+        The arguments for the trasform gate's biases tf.get_variable.
+    name : a string or None
+        An optional name to attach to this layer.
 
+    Examples
+    --------
+    >>> network = InputLayer(x, name='inputs')
+    >>> network = DenseLayer(x, 50, tf.nn.tanh, name='dense')
+    >>> for i in xrange(10):
+    ...     network=HighWayLayer(
+    ...               network, 
+    ...               act=tf.nn.tanh,
+    ...               transform_act=tf.nn.relu,
+    ...               b_transform_init=tf.constant_initializer(value=-2.0),
+    ...               name='highway_{}'.format(i))
+    >>> network = DenseLayer(dense, n_out, tf.identity, name='output')
 
+    Notes
+    -----
+    If the input to this layer has more than two axes, it need to flatten the
+    input by using :class:`FlattenLayer` in this case.
+    """
+    def __init__(
+        self,
+        layer = None,
+        act = tf.nn.tanh,
+        transform_act = tf.nn.relu,
+        W_init = tf.truncated_normal_initializer(stddev=0.1),
+        b_init = tf.constant_initializer(value=0.1),
+        b_transform_init = tf.constant_initializer(value=-2.0),
+        W_init_args = {},
+        b_init_args = {},
+        b_transform_init_args = {},
+        name ='highway_layer',
+    ):
+        Layer.__init__(self, name=name)
+        self.inputs = layer.outputs
+        if self.inputs.get_shape().ndims != 2:
+            raise Exception("The input dimension must be rank 2, please reshape or flatten it")
 
+        n_in = int(self.inputs.get_shape()[-1])
+        self.n_units = n_in
+        print("  [TL] HighWayLayer  %s: ndim:%d  act:%s  transform_act:%s" % (self.name, self.n_units, act.__name__, transform_act.__name__))
+        with tf.variable_scope(name) as vs:
+            W = tf.get_variable(name='W', shape=(n_in, self.n_units), initializer=W_init, **W_init_args )
+            W_T = tf.get_variable(name='W_transform', shape=(n_in, self.n_units), initializer=W_init, **W_init_args )
+            if b_init is not None:
+                try:
+                    b = tf.get_variable(name='b', shape=(self.n_units), initializer=b_init, **b_init_args )
+                    b_T = tf.get_variable(name='b_transform', shape=(self.n_units), initializer=b_transform_init, **b_transform_init_args )
+                except: # If initializer is a constant, do not specify shape.
+                    b = tf.get_variable(name='b', initializer=b_init, **b_init_args )
+                    b_T = tf.get_variable(name='b_transform', initializer=b_transform_init, **b_transform_init_args )   
+                H = act(tf.matmul(self.inputs, W) + b)
+                T = transform_act(tf.matmul(self.inputs, W_T) + b_T)
+            else:
+                H = act(tf.matmul(self.inputs, W))
+                T = transform_act(tf.matmul(self.inputs, W_T))
+            C = tf.subtract(1.0, T)
+            self.outputs = tf.add(tf.multiply(H, T), tf.multiply(self.inputs, C))
+        # Hint : list(), dict() is pass by value (shallow), without them, it is
+        # pass by reference.
+        self.all_layers = list(layer.all_layers)
+        self.all_params = list(layer.all_params)
+        self.all_drop = dict(layer.all_drop)
+        self.all_layers.extend( [self.outputs] )
+        if b_init is not None:
+            self.all_params.extend( [W, W_T, b, b_T] )
+        else:
+            self.all_params.extend( [W, W_T] )
 
+class HighwayConv2dLayer(Layer):
+    """
+    The :class:`HighwayConv2dLayer` class is a 2D Convolutional Highway layer,`_.
+
+    Parameters
+    ----------
+    layer : a :class:`Layer` instance
+        The `Layer` class feeding into this layer.
+    act : activation function
+        The function that is applied to the layer activations.
+    transform_act : transform gate's activation function
+        The function that is applied to the transform gate's activations.
+    shape : list of shape
+        shape of the filters, [filter_height, filter_width, in_channels, out_channels].
+    strides : a list of ints.
+        The stride of the sliding window for each dimension of input.\n
+        It Must be in the same order as the dimension specified with format.
+    padding : a string from: "SAME", "VALID".
+        The type of padding algorithm to use.
+    W_init : weights initializer
+        The initializer for initializing the weight matrix.
+    b_init : biases initializer or None
+        The initializer for initializing the bias vector. If None, skip biases.
+    b_transform_init : biases initializer or None
+        The initializer for initializing the transform gate's bias vector. If None, skip biases.
+    W_init_args : dictionary
+        The arguments for the weights tf.get_variable().
+    b_init_args : dictionary
+        The arguments for the biases tf.get_variable().
+    b_transform_init_args : dictionary
+        The arguments for the trasform gate's biases tf.get_variable().
+    use_cudnn_on_gpu : an optional bool. Defaults to True.
+    data_format : an optional string from: "NHWC", "NCHW". Defaults to "NHWC".
+    name : a string or None
+        An optional name to attach to this layer.
+
+    Notes
+    ------
+    - shape = [h, w, the number of output channel of previous layer, the number of output channels]
+    - the number of output channel of a layer is its last dimension.
+    """
+    def __init__(
+        self,
+        layer = None,
+        act = tf.nn.tanh,
+        transform_act = tf.nn.relu,
+        shape = [5, 5, 1, 100],
+        strides =[1, 1, 1, 1],
+        padding ='SAME',
+        W_init = tf.truncated_normal_initializer(stddev=0.02),
+        b_init = tf.constant_initializer(value=0.0),
+        b_transform_init = tf.constant_initializer(value=-2.0),
+        W_init_args = {},
+        b_init_args = {},
+        b_transform_init_args = {},
+        use_cudnn_on_gpu = None,
+        data_format = None,
+        name ='highway_cnn_layer',
+    ):
+        Layer.__init__(self, name=name)
+        self.inputs = layer.outputs
+        if act is None:
+            act = tf.identity
+        if transform_act is None:
+            transform_act = tf.identity
+        print("  [TL] HighwayConv2dLayer %s: shape:%s strides:%s pad:%s act:%s transform_act:%s" %
+                            (self.name, str(shape), str(strides), padding, act.__name__, transform_act.__name__))    
+        with tf.variable_scope(name) as vs:
+            W = tf.get_variable(name='W_conv2d', shape=shape, initializer=W_init, **W_init_args )
+            W_T = tf.get_variable(name='W_transform_conv2d', shape=shape, initializer=W_init, **W_init_args )
+            if b_init:
+                b = tf.get_variable(name='b_conv2d', shape=(shape[-1]), initializer=b_init, **b_init_args )
+                b_T = tf.get_variable(name='b_transform_conv2d', shape=(shape[-1]), initializer=b_transform_init, **b_transform_init_args )
+                H = act( tf.nn.conv2d(self.inputs, W, strides=strides, 
+                              padding=padding, use_cudnn_on_gpu=use_cudnn_on_gpu, data_format=data_format) + b )
+                T = transform_act( tf.nn.conv2d(self.inputs, W_T, strides=strides, 
+                                     padding=padding, use_cudnn_on_gpu=use_cudnn_on_gpu, data_format=data_format) + b_T )   
+            else:
+                H = act( tf.nn.conv2d(self.inputs, W, strides=strides, 
+                              padding=padding, use_cudnn_on_gpu=use_cudnn_on_gpu, data_format=data_format) )
+                T = transform_act( tf.nn.conv2d(self.inputs, W_T, strides=strides, 
+                                    padding=padding, use_cudnn_on_gpu=use_cudnn_on_gpu, data_format=data_format) )
+            C = tf.subtract(1.0, T)
+            self.outputs = tf.add(tf.multiply(H, T), tf.multiply(self.inputs, C))
+        self.all_layers = list(layer.all_layers)
+        self.all_params = list(layer.all_params)
+        self.all_drop = dict(layer.all_drop)
+        self.all_layers.extend( [self.outputs] )
+        if b_init:
+            self.all_params.extend( [W, W_T, b, b_T] )
+        else:
+            self.all_params.extend( [W, W_T] )
+
+def HighwayConv2d(net, n_filter=32, filter_size=(3, 3), strides=(1, 1), act = tf.nn.tanh, transform_act = tf.nn.relu,
+        padding='SAME', W_init = tf.truncated_normal_initializer(stddev=0.02), b_init = tf.constant_initializer(value=0.0),
+        b_transform_init = tf.constant_initializer(value=-2.0), W_init_args = {}, b_init_args = {}, b_transform_init_args={}, 
+        use_cudnn_on_gpu = None, data_format = None,name ='conv2d',):
+    """Wrapper for :class:`HighwayConv2dLayer`, if you don't understand how to use :class:`HighwayConv2dLayer`, this function may be easier.
+
+    Parameters
+    ----------
+    net : TensorLayer layer.
+    n_filter : number of filter.
+    filter_size : tuple (height, width) for filter size.
+    strides : tuple (height, width) for strides.
+    act : None or activation function.
+    transform_act : None or activation function of transform gate.
+    others : see :class:`HighwayConv2dLayer`.
+
+    """
+    assert len(strides) == 2, "len(strides) should be 2, Conv2d and Conv2dLayer are different."
+    if act is None:
+        act = tf.identity
+    if transform_act is None:
+        transform_act = tf.identity
+    try:
+        pre_channel = int(net.outputs.get_shape()[-1])
+    except: # if pre_channel is ?, it happens when using Spatial Transformer Net
+        pre_channel = 1
+        print("[warnings] unknow input channels, set to 1")
+    net = HighwayConv2dLayer(net,
+                   act = act,
+                   transform_act = transform_act,
+                   shape = [filter_size[0], filter_size[1], pre_channel, n_filter],  # 32 features for each 5x5 patch
+                   strides = [1, strides[0], strides[1], 1],
+                   padding = padding,
+                   W_init = W_init,
+                   b_init = b_init,
+                   b_transform_init = b_transform_init,
+                   W_init_args = {},
+                   b_init_args = {},
+                   b_transform_init_args = {},
+                   use_cudnn_on_gpu = use_cudnn_on_gpu,
+                   data_format = data_format,
+                   name = name)
+    return net
 
 
 
